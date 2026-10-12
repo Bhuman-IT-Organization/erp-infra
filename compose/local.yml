@@ -1,0 +1,114 @@
+# The whole local stack on a laptop (ADR-0024: nothing deploys yet). One command: node scripts/local-up.mjs
+# Legacy comes from ../legacy-local (fixed layout, ADR-0011); this file adds the Node side.
+name: erp-local
+
+include:
+  - path: ../legacy-local/docker-compose.yml
+    project_directory: ../legacy-local
+    env_file: ../legacy-local/.env
+
+services:
+  redis:
+    image: redis:7-alpine
+    # AOF on for the auth logical DB (ADR-0005: a cache flush must never log anyone out); DB 0 = cache,
+    # DB 1 = auth (`AUTH_REDIS_DB`), DB 2 = BullMQ queues (`QUEUE_REDIS_DB`, BE-14); a separate auth
+    # instance with `requirepass` is Phase 5. No maxmemory-policy flag: BullMQ needs the default noeviction.
+    # RDB snapshots stay off (`--save ""`): AOF with everysec fsync is the durability here.
+    command: ["redis-server", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec"]
+    ports:
+      - "127.0.0.1:63791:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Local mail catcher (Phase 4.3, ADR-0049): every email the api or worker sends lands here, nothing leaves the machine. Chaos is on for the wire proof (verify-wave0). Local only, never deployed.
+  mailpit:
+    image: axllent/mailpit:v1.31.3
+    environment:
+      MP_ENABLE_CHAOS: "true"
+      MP_MAX_MESSAGES: "500"
+    ports:
+      - "127.0.0.1:11025:1025"
+      - "127.0.0.1:18025:8025"
+    healthcheck:
+      test: ["CMD", "/mailpit", "readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build:
+      context: ../../erp-api
+      dockerfile: Dockerfile
+    env_file: ../env/local/api.env
+    volumes:
+      - filesdata:/var/lib/erp/files
+    depends_on:
+      legacy-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+
+  # The BullMQ worker (BE-14): the api image, its own entry and pool role (DB_POOL_ROLE=worker); no port. Shares the files volume with api.
+  worker:
+    build:
+      context: ../../erp-api
+      dockerfile: Dockerfile
+    command: ["node", "dist/worker.js"]
+    env_file: ../env/local/worker.env
+    volumes:
+      - filesdata:/var/lib/erp/files
+    depends_on:
+      legacy-db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailpit:
+        condition: service_started
+
+  web:
+    build:
+      context: ../../erp-web
+      dockerfile: Dockerfile
+    env_file: ../env/local/web.env
+    depends_on:
+      api:
+        condition: service_healthy
+
+  nginx:
+    image: nginx:1.27-alpine
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ../nginx/local/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../nginx/local/snippets:/etc/nginx/snippets:ro
+    # restart: true — nginx resolves the upstream names once at start; when an upstream
+    # container is recreated (new image, new IP) Compose restarts nginx so it re-resolves.
+    depends_on:
+      api:
+        condition: service_healthy
+        restart: true
+      web:
+        condition: service_started
+        restart: true
+      legacy:
+        condition: service_started
+        restart: true
+
+volumes:
+  # Redis AOF (auth sessions, ADR-0005). `node scripts/local-down.mjs --volumes` drops it together with the legacy DB.
+  redisdata:
+  # Node's own file storage (ADR-0041): uploads and generated files; mounted into api and worker at FILE_STORAGE_DIR. local-down.mjs --volumes drops it.
+  filesdata:

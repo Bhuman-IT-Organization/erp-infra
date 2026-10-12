@@ -1,0 +1,75 @@
+# Local-only stack for running the legacy ERP so the team can learn what it does.
+# Nothing here is deployed. The client's server is never contacted.
+# Values come from .env, which setup.mjs generates and .gitignore excludes.
+#
+# Included by ../compose/local.yml as part of the `erp-local`
+# project; run standalone with `node setup.mjs`. Service names `legacy` and
+# `legacy-db` are the Nginx upstream and the api's DB host (ADR-0025 names the
+# transitional system `legacy`). No top-level `name:` here on purpose: standalone
+# runs take the project name from .env (COMPOSE_PROJECT_NAME), included runs
+# take it from the including file.
+
+services:
+  legacy-db:
+    # MySQL 8.0 to match production. The client's own phpMyAdmin export reports
+    # "Server version: 8.0.46". An older dump in the tree says MariaDB 10.4, but
+    # that one was taken from 127.0.0.1 -- a developer's local machine, not the
+    # server -- so it is not evidence of what production runs.
+    image: mysql:8.0
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${DB_NAME}
+      MYSQL_USER: ${DB_USER}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_general_ci
+      # The dump carries rows a strict server rejects (zero dates, missing
+      # defaults), which is how the live data actually looks.
+      - --sql-mode=NO_ENGINE_SUBSTITUTION,ALLOW_INVALID_DATES
+      # CodeIgniter's mysqli driver is happiest with the older auth plugin.
+      - --default-authentication-plugin=mysql_native_password
+      # ADR-0031 §4: explicit so the pool arithmetic in erp-infra/README.md 'Pool budget'
+      # is tested against a known number, not MySQL 8's default 151. Node pools (erp-api
+      # connection_limit) + Perfex's own connections must stay under 60 − headroom.
+      - --max-connections=60
+    volumes:
+      - dbdata:/var/lib/mysql
+    ports:
+      # Exposed on 33061 so it cannot collide with a local XAMPP MySQL on 3306.
+      - "127.0.0.1:33061:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${DB_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  legacy:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      legacy-db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:80"
+    volumes:
+      # The legacy tree, mounted as the web root. The application writes to
+      # uploads/ and its cache and session directories; that is the app running
+      # normally, not us editing it.
+      - ${LEGACY_ROOT}:/var/www/html
+      # Generated config, mounted OVER the real one. The file on disk is never
+      # modified: the container simply sees a different version, with local
+      # throwaway credentials and legacy-db as the hostname instead of localhost.
+      - ./app-config.local.php:/var/www/html/application/config/app-config.php:ro
+      # The wave-0 SSO module, developed in erp-infra and overlaid into the read-only legacy
+      # tree (ADR-0030: a Perfex module, no core edit); erp-infra owns it because it is what
+      # gets uploaded to the customer's host later. A nested bind mount inside the tree mount:
+      # Perfex's directory_map sees modules/erp_sso like any other module; the erp-legacy
+      # folder is never written. Read-only. Perfex only loads an ACTIVATED module, so the row
+      # in tblmodules is written by activate-module.mjs on the local DB (setup.mjs and
+      # erp-infra's local-up both run it).
+      - ../legacy/modules/erp_sso:/var/www/html/modules/erp_sso:ro
+
+volumes:
+  dbdata:

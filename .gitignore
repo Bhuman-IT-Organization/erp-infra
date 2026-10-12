@@ -1,0 +1,14 @@
+# Rendered local env files (from legacy-local/.env). Templates are committed, values never (ADR-0014).
+env/local/*.env
+# the Nginx company-network allow-list, rendered by scripts/render-local-env.mjs from ERP_COMPANY_NETWORKS
+nginx/local/snippets/company-network.conf
+# per-machine RSA signing key for the local api (ADR-0014: secrets never in git)
+env/local/*.pem
+*.log
+.DS_Store
+Thumbs.db
+# local file storage of host runs (FILE_STORAGE_DIR in api.host.env)
+.local/
+# legacy-local setup output: generated credentials and the config bind-mounted over Perfex's
+legacy-local/.env
+legacy-local/app-config.local.php

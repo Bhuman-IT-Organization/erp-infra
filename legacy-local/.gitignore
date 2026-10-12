@@ -1,0 +1,4 @@
+# Generated per machine. Contains local database credentials and a local
+# encryption key. Never commit.
+.env
+app-config.local.php
