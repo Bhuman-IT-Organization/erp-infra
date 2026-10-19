@@ -1,0 +1,29 @@
+# Web dev mode: `next dev` on the laptop instead of the `web` container, behind the same Nginx.
+# Used only through `node scripts/local-up.mjs --web-dev`; on its own it is not a stack.
+#
+# Why: the `web` container runs a production build, so every change to erp-web needs a rebuild.
+# With this override Nginx keeps answering on 8088 (one origin, so the login cookie and the
+# relative /api/v1 calls work as usual) but sends web traffic to the laptop's port 3000, where
+# `node scripts/web-dev.mjs` runs `next dev` with hot reload.
+#
+# How:
+# - `web` is moved into a profile nobody activates, so `up` does not build or start it.
+# - nginx stops depending on `web` (`!override` replaces the whole list, it does not merge).
+# - `extra_hosts` puts `web` in nginx's /etc/hosts as the laptop (`host-gateway`). /etc/hosts wins
+#   over Docker's DNS, so `upstream node_web { server web:3000; }` in default.conf reaches the laptop
+#   without any change to default.conf.
+# Back to normal: run `node scripts/local-up.mjs` without the flag.
+services:
+  web:
+    profiles: ['web-container']
+
+  nginx:
+    extra_hosts:
+      - 'web:host-gateway'
+    depends_on: !override
+      api:
+        condition: service_healthy
+        restart: true
+      legacy:
+        condition: service_started
+        restart: true
