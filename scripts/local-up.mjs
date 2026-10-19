@@ -4,10 +4,13 @@
  * as Compose project `erp-local` from compose/local.yml, then waits until
  * Nginx answers for both the api and the web page.
  *
- * Usage:  node scripts/local-up.mjs [--dry-run] [--no-build] [--help]
+ * Usage:  node scripts/local-up.mjs [--dry-run] [--no-build] [--web-dev] [--help]
  *
  *   --dry-run   print every command this script would run, run nothing, exit 0
  *   --no-build  pass --no-build to `docker compose up` (reuse the last images)
+ *   --web-dev   web dev mode (compose/local.web-dev.yml): no `web` container; Nginx sends web traffic
+ *               to `next dev` on this laptop, started with `node scripts/web-dev.mjs`. Run without the
+ *               flag to go back to the container.
  */
 
 import { spawnSync } from 'node:child_process'
@@ -25,13 +28,17 @@ const NGINX = 'http://127.0.0.1:8088'
 const argv = process.argv.slice(2)
 const DRY_RUN = argv.includes('--dry-run')
 const NO_BUILD = argv.includes('--no-build')
+const WEB_DEV = argv.includes('--web-dev')
+const WEB_DEV_FILE = 'compose/local.web-dev.yml'
 
 if (argv.includes('--help') || argv.includes('-h')) {
   console.log(`
-  Usage: node scripts/local-up.mjs [--dry-run] [--no-build]
+  Usage: node scripts/local-up.mjs [--dry-run] [--no-build] [--web-dev]
 
     --dry-run   print the commands, run nothing
     --no-build  do not rebuild the api and web images
+    --web-dev   no web container: Nginx sends web traffic to next dev on this
+                laptop (start it with: node scripts/web-dev.mjs). Hot reload, no rebuilds.
 
   Brings up legacy, legacy-db, api, web, nginx and redis as Compose project
   erp-local from ${COMPOSE_FILE}, renders env/local/*.env first, and waits for
@@ -115,8 +122,11 @@ if (missingKeys.length > 0) {
 if (run('node', ['scripts/render-local-env.mjs'], ROOT) !== 0) die('render-local-env failed.')
 
 // e. up.
-const upArgs = ['compose', '-f', COMPOSE_FILE, 'up', '-d', NO_BUILD ? '--no-build' : '--build']
+const upArgs = ['compose', '-f', COMPOSE_FILE, ...(WEB_DEV ? ['-f', WEB_DEV_FILE] : []), 'up', '-d', NO_BUILD ? '--no-build' : '--build']
 if (run('docker', upArgs, ROOT) !== 0) die(`docker compose up failed. Next: docker compose -f ${COMPOSE_FILE} logs api web nginx`)
+// e2. web dev mode: the override leaves `web` out of `up`, but a container from an earlier normal run
+//     would keep running on its own. Stop and remove it so only `next dev` on the laptop answers.
+if (WEB_DEV && run('docker', ['compose', '-f', COMPOSE_FILE, 'rm', '--stop', '--force', 'web'], ROOT) !== 0) die('Could not remove the web container for web dev mode. See the output above.')
 
 // f. the legacy database must hold a completed import (review WR-07). setup.mjs records one in
 //    `_local_import` only after the dump loaded end to end; a run that died half-way leaves no row.
@@ -152,7 +162,8 @@ if (run('corepack', ['yarn', 'db:apply'], ERP_API) !== 0) die(`Could not apply e
 // g. wait until Nginx routes both sides.
 const apiOk = await waitFor(`${NGINX}/api/v1/health`, 180_000, 3_000)
 if (!apiOk) die(`${NGINX}/api/v1/health did not return 200 within 180s.\n  Next: docker compose -f ${COMPOSE_FILE} logs api web nginx`)
-const webOk = await waitFor(`${NGINX}/status`, 60_000, 3_000)
+// In web dev mode the web side is `next dev` on this laptop, which the developer starts next.
+const webOk = WEB_DEV || (await waitFor(`${NGINX}/status`, 60_000, 3_000))
 if (!webOk) die(`${NGINX}/status did not return 200 within 60s.\n  Next: docker compose -f ${COMPOSE_FILE} logs api web nginx`)
 
 // h. where things are.
@@ -167,4 +178,8 @@ console.log(`
     127.0.0.1:63791                             Redis
 
   Stop with: node scripts/local-down.mjs
+`)
+if (WEB_DEV) console.log(`  Web dev mode: the web pages answer once you start the dev server.
+  In a second terminal:  node scripts/web-dev.mjs
+  Back to the web container:  node scripts/local-up.mjs
 `)

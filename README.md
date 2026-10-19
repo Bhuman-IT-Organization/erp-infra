@@ -27,6 +27,19 @@ A second run is a no-op unless a source file changed. Two things make that true,
 | <http://127.0.0.1:18025> | Mailpit web UI and REST API (local mail catcher) |
 | `127.0.0.1:11025` | Mailpit SMTP, for host runs |
 
+### Web dev mode (hot reload for erp-web)
+
+The `web` container runs a production build, so every erp-web change needs `local-up` again (a rebuild). While you build screens, use web dev mode instead:
+
+```bash
+node scripts/local-up.mjs --web-dev    # the stack without the web container
+node scripts/web-dev.mjs               # in a second terminal: next dev on port 3000; leave it running
+```
+
+Then open <http://localhost:8088> as usual. A saved change in erp-web shows in the browser within seconds, logged in, against the real api and Perfex. Never open `localhost:3000` directly: the login cookie and the relative `/api/v1` calls only work behind Nginx's one origin. Ctrl+C stops the dev server; `node scripts/local-up.mjs` (no flag) brings the web container back.
+
+How it works: `compose/local.web-dev.yml` leaves `web` out of `up`, drops it from nginx's `depends_on`, and gives nginx `extra_hosts: web:host-gateway`, so `upstream node_web { server web:3000; }` reaches the laptop's port 3000 without changing `default.conf` (nginx reads `/etc/hosts` before Docker's DNS). `--web-dev` also stops and removes a `web` container left from a normal run. Hot reload uses a websocket on `/_next/hmr`, which has its own location in `default.conf` (the shared `proxy-common.conf` clears `Connection`, which would drop the upgrade); outside dev mode that path answers 404. `scripts/web-dev.mjs` refuses to start while the `web` container still runs or when nothing answers on 8088. Verified 2026-10-19 with Next 16.3: pages, assets and the `/_next/hmr` websocket (101) through Nginx, and a saved message-file change visible on the next request with no rebuild.
+
 Published ports: 8088 nginx, 8080 legacy direct, 33061 MySQL, 63791 Redis, 11025 and 18025 Mailpit, all bound to `127.0.0.1` only. `api` and `web` publish nothing; reach them through Nginx. Redis runs with AOF on (`--appendonly yes --appendfsync everysec`, named volume `redisdata`) because DB 1 holds auth sessions (ADR-0005: a cache flush must never log anyone out); DB 0 is cache; it is loopback-only and has no password; `requirepass` and a separate auth instance are Phase 5. The local MySQL runs with an explicit `--max-connections=60` (set in `workspace/legacy-local/docker-compose.yml`, where the service is defined) so the pool arithmetic below is tested against a known number, not MySQL 8's default 151.
 
 ## Pool budget
