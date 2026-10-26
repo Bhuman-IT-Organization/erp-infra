@@ -52,10 +52,43 @@ if (running.status === 0 && running.stdout.split(/\r?\n/).includes('web')) {
   die('The web container is still running, so Nginx is not in dev mode.\n  Run first:  node scripts/local-up.mjs --web-dev')
 }
 
+
 console.log(`
-  erp-web dev server on port ${PORT}. Open http://localhost:8088 (not :${PORT}).
-  Ctrl+C stops it. To go back to the normal stack:  node scripts/local-up.mjs
+  ==========================================
+       ERP LOCAL DEVELOPMENT SERVER
+  ==========================================
+
+  Main ERP login:
+    http://localhost:8088/admin/authentication
+
+  ERP status:
+    http://localhost:8088/status
+
+  Predefined Replies:
+    http://localhost:8088/setup/predefined-replies
+
+  Swagger API documentation:
+    http://localhost:8088/api/v1/docs
+
+  OpenAPI JSON:
+    http://localhost:8088/api/v1/openapi.json
+
+  API health:
+    http://localhost:8088/api/v1/health
+
+  Frontend dev server:
+    http://localhost:${PORT}
+
+  Browse the ERP using port 8088.
+  Press Ctrl+C to stop the frontend.
+
+  To return to normal mode:
+    node scripts/local-up.mjs
+
+  ==========================================
 `)
+
+
 
 // `shell` on Windows: corepack ships as corepack.cmd (the same reason local-up.mjs sets it).
 const child = spawn('corepack', ['yarn', 'dev', '--port', PORT], {
