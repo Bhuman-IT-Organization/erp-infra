@@ -1918,7 +1918,7 @@ const main = async () => {
   check(`34f GET /api/v1/fixed-equipment-depreciations without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '200 or 403 ERP-AUTH-0005 (the target row is not an administrator: it depends on its depreciation view codes)'}`,
     depreciationsAnon.status === 401 && isProblem(depreciationsAnon, 'ERP-AUTH-0004') && routeOf(depreciationsAnon) === 'api' && depreciationsAuthedOk && routeOf(depreciationsAuthed) === 'api',
     `without: ${problemDetail(depreciationsAnon)} (${routeOf(depreciationsAnon)}); with: ${depreciationsAuthed.status}${depreciationsAuthed.json?.code ? `/${depreciationsAuthed.json.code}` : ''} (${routeOf(depreciationsAuthed)})`)
-  
+
   // 15. lockout (last: it locks the target account until the restore clears the key) ------------------
   const responses = []
   for (let i = 0; i < LOCKOUT_THRESHOLD; i += 1) responses.push(await login(`wrong-${pw}-${i}`))
