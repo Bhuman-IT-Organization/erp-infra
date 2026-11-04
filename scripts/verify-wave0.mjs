@@ -1915,7 +1915,7 @@ const main = async () => {
   const depreciationsAuthedOk = isAdminRow
     ? depreciationsAuthed.status === 200
     : depreciationsAuthed.status === 200 || (depreciationsAuthed.status === 403 && isProblem(depreciationsAuthed, 'ERP-AUTH-0005'))
-  check(`34f GET /api/v1/fixed-equipment-depreciations without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '200 or 403 ERP-AUTH-0005 (the target row is not an administrator: it depends on its depreciation view codes)'}`,
+  check(`34f GET /api/v1/fixed-equipment-depreciations without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '200 or 403 ERP-AUTH-0005 (the target row is not an administrator: it depends on its view codes in the tab\'s five groups)'}`,
     depreciationsAnon.status === 401 && isProblem(depreciationsAnon, 'ERP-AUTH-0004') && routeOf(depreciationsAnon) === 'api' && depreciationsAuthedOk && routeOf(depreciationsAuthed) === 'api',
     `without: ${problemDetail(depreciationsAnon)} (${routeOf(depreciationsAnon)}); with: ${depreciationsAuthed.status}${depreciationsAuthed.json?.code ? `/${depreciationsAuthed.json.code}` : ''} (${routeOf(depreciationsAuthed)})`)
 
