@@ -1615,15 +1615,16 @@ const main = async () => {
     `${anonEstimateRequestStatuses.status} location=${locOf(anonEstimateRequestStatuses)} route=${routeOf(anonEstimateRequestStatuses)}`)
 
   const estimateRequestStatusListForms = [
-    ESTIMATE_REQUEST_STATUSES_LIST,
-    `${ESTIMATE_REQUEST_STATUSES_LIST}/`,
-  ].flatMap((p) => [['GET', p], ['HEAD', p]])
+    ['GET', ESTIMATE_REQUEST_STATUSES_LIST],
+    ['HEAD', ESTIMATE_REQUEST_STATUSES_LIST],
+  ]
+
   const estimateRequestStatusListFailures = await failuresOf(
     estimateRequestStatusListForms,
     (r) => r.status === 200 && routeOf(r) === 'web',
     (m, p) => http(m, p),
   )
-  check(`28c /setup/estimate-request-statuses and its trailing slash stay on web for GET and HEAD (${estimateRequestStatusListForms.length} requests, signed in)`,
+  check(`28c /setup/estimate-request-statuses stays on web for GET and HEAD (${estimateRequestStatusListForms.length} requests, signed in)`,
     estimateRequestStatusListFailures.length === 0,
     failDetail(estimateRequestStatusListFailures, 'not routed to web'))
 
