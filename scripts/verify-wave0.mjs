@@ -120,11 +120,12 @@
  *       or 403 by the row's administrator flag. Executed after 26 and before 15. Every request to a Perfex
  *       write path is sent WITHOUT a session and with id 999999 where the path takes one, so a regression
  *       answers Perfex's own 307 to its login and never writes.
- *   28  Estimate Request Statuses: `/setup/estimate-request-statuses` answers from web and sends an
- *       anonymous visitor to login; GET and HEAD of Perfex's `/admin/estimate_request/statuses` list
- *       (including `/index` variants and `?legacy=1`) redirect with a query-free 302; legacy `status`
- *       and `delete_status` writers are refused; the estimate request list, form, table and
- *       `update_request_status` stay on Perfex; `/api/v1/estimate-request-statuses` enforces admin access.
+ *   28  Estimate Request Statuses: /setup/estimate_request-statuses answers from web and sends an
+ *       anonymous visitor to the login page; the old /admin/estimate_request/statuses URL redirects
+ *       there, preserving its query string;
+ *       Estimate_request::status and ::delete_status are refused with ERP-LEGACY-0403 for every method
+ *       and CI3 alias; the other Estimate Request screens remain on Perfex; and
+ *       /api/v1/estimate-request-statuses answers 401 without a bearer and 200 or 403 by administrator flag.
  *   29  W2A-05, Currencies (plan 04.1-30): /setup/currencies answers 200 from web signed in and a relative
  *       302 to /login?next=... without a session; every GET and HEAD of Perfex's list (/admin/currencies,
  *       with a trailing slash, /index, /index/, with ?legacy=1: no escape, D-16) redirects to it with a
@@ -1598,19 +1599,19 @@ const main = async () => {
     paymentModesAnon.status === 401 && isProblem(paymentModesAnon, 'ERP-AUTH-0004') && routeOf(paymentModesAnon) === 'api' && paymentModesAuthedOk && routeOf(paymentModesAuthed) === 'api',
     `without: ${problemDetail(paymentModesAnon)} (${routeOf(paymentModesAnon)}); with: ${paymentModesAuthed.status}${paymentModesAuthed.json?.code ? `/${paymentModesAuthed.json.code}` : ''} (${routeOf(paymentModesAuthed)})`)
 
-  // 28. Estimate Request Statuses: the Node Setup screen replaces only Perfex's status management.
-  //     Keep the request list, forms, table and status-update route on Perfex; the API check reuses
-  //     step 18's bearer and administrator flag.
-  const ESTIMATE_REQUEST_STATUSES_LIST = '/setup/estimate-request-statuses'
+  // 28. Estimate Request Statuses: route the management screen under Setup; keep the other Estimate
+  //     Request screens on Perfex. The old status and delete_status methods are the only legacy writers.
+  //     The api check reuses the bearer and administrator flag from step 18.
+  const ESTIMATE_REQUEST_STATUSES_LIST = '/setup/estimate_request-statuses'
 
   const estimateRequestStatusesPage = await http('GET', ESTIMATE_REQUEST_STATUSES_LIST)
-  check('28a GET /setup/estimate-request-statuses signed in -> 200 from web through Nginx',
+  check('28a GET /setup/estimate_request-statuses signed in -> 200 from web through Nginx',
     estimateRequestStatusesPage.status === 200 && routeOf(estimateRequestStatusesPage) === 'web',
     `${estimateRequestStatusesPage.status} route=${routeOf(estimateRequestStatusesPage)}`)
   const anonEstimateRequestStatuses = await http('GET', ESTIMATE_REQUEST_STATUSES_LIST, { cookies: '' })
-  check('28b GET /setup/estimate-request-statuses with NO session cookie -> 302 to its encoded login next path from proxy.ts',
+  check('28b GET /setup/estimate_request-statuses with NO session cookie -> 302 to its encoded login next path from proxy.ts',
     anonEstimateRequestStatuses.status === 302 &&
-      locOf(anonEstimateRequestStatuses) === '/login?next=%2Fsetup%2Festimate-request-statuses' &&
+      locOf(anonEstimateRequestStatuses) === '/login?next=%2Fsetup%2Festimate_request-statuses' &&
       routeOf(anonEstimateRequestStatuses) === 'web',
     `${anonEstimateRequestStatuses.status} location=${locOf(anonEstimateRequestStatuses)} route=${routeOf(anonEstimateRequestStatuses)}`)
 
@@ -1621,26 +1622,25 @@ const main = async () => {
   const estimateRequestStatusListFailures = await failuresOf(
     estimateRequestStatusListForms,
     (r) => r.status === 200 && routeOf(r) === 'web',
-    (m, p) => http(m, p),
   )
-  check(`28c /setup/estimate-request-statuses and its trailing slash stay on web for GET and HEAD (${estimateRequestStatusListForms.length} requests, signed in)`,
+  check(`28c /setup/estimate_request-statuses and its trailing slash stay on web for GET and HEAD (${estimateRequestStatusListForms.length} requests, signed in)`,
     estimateRequestStatusListFailures.length === 0,
     failDetail(estimateRequestStatusListFailures, 'not routed to web'))
 
   const estimateRequestStatusesLegacyForms = [
     '/admin/estimate_request/statuses',
     '/admin/estimate_request/statuses/',
-    '/admin/estimate_request/statuses/index',
-    '/admin/estimate_request/statuses/index/',
     '/admin/estimate_request/statuses?legacy=1',
-  ].flatMap((p) => [['GET', p], ['HEAD', p]])
+  ].flatMap((p) => {
+    const target = `/setup/estimate_request-statuses${new URL(p, 'http://localhost').search}`
+    const isRedirect = (r) => r.status === 301 && locOf(r) === target
+    return [['GET', p, isRedirect], ['HEAD', p, isRedirect]]
+  })
   const estimateRequestStatusesLegacyFailures = await failuresOf(
     estimateRequestStatusesLegacyForms,
-    (r) => r.status === 302 &&
-      locOf(r) === ESTIMATE_REQUEST_STATUSES_LIST &&
-      routeOf(r) === 'web',
+    () => false,
   )
-  check(`28d every GET and HEAD of Perfex's estimate request statuses list, including /index variants and ?legacy=1, redirects to ${ESTIMATE_REQUEST_STATUSES_LIST} with a query-free 302 (${estimateRequestStatusesLegacyForms.length} requests)`,
+  check(`28d the old /admin/estimate_request/statuses URL and its variants redirect to Setup, preserving the query (${estimateRequestStatusesLegacyForms.length} requests)`,
     estimateRequestStatusesLegacyFailures.length === 0,
     failDetail(estimateRequestStatusesLegacyFailures, 'not redirected'))
 
@@ -1664,15 +1664,9 @@ const main = async () => {
     estimateRequestStatusWriteFailures.length === 0,
     failDetail(estimateRequestStatusWriteFailures, 'not refused'))
 
-  const estimateRequestReaders = [
-    '/admin/estimate_request',
-    '/admin/estimate_request/forms',
-    '/admin/estimate_request/update_request_status',
-    '/admin/estimate_request/form',
-    '/admin/estimate_request/table',
-  ].flatMap((p) => [['GET', p], ['POST', p]])
+  const estimateRequestReaders = ['/admin/estimate_request', '/admin/estimate_request/forms'].map((p) => ['GET', p])
   const estimateRequestReaderFailures = await failuresOf(estimateRequestReaders, setupLegacy)
-  check('28f the Estimate Request list, forms, update_request_status, form and table stay on Perfex',
+  check('28f the Estimate Request list and forms still reach Perfex, never refused or redirected',
     estimateRequestReaderFailures.length === 0,
     failDetail(estimateRequestReaderFailures, 'moved'))
 
