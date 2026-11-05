@@ -20,7 +20,6 @@ A second run is a no-op unless a source file changed. Two things make that true,
 | <http://localhost:8088/login> | erp-web login page, through Nginx (a plain GET of `/admin/authentication` redirects here) |
 | <http://localhost:8088/admin/authentication?legacy=1> | legacy (Perfex staff login form), through Nginx |
 | <http://localhost:8088/status> | erp-web page, through Nginx |
-| <http://localhost:8088/setup/estimate_request-statuses> | erp-web Estimate Request status management, through Nginx |
 | <http://localhost:8088/api/v1/health> | erp-api, through Nginx |
 | <http://localhost:8080> | legacy directly (its own Apache, bypassing Nginx) |
 | `127.0.0.1:33061` | MySQL (`legacy-db`), for host-side tooling |

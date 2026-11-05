@@ -120,12 +120,6 @@
  *       or 403 by the row's administrator flag. Executed after 26 and before 15. Every request to a Perfex
  *       write path is sent WITHOUT a session and with id 999999 where the path takes one, so a regression
  *       answers Perfex's own 307 to its login and never writes.
- *   28  Estimate Request Statuses: /setup/estimate_request-statuses answers from web and sends an
- *       anonymous visitor to the login page; the old /admin/estimate_request/statuses URL redirects
- *       there, preserving its query string;
- *       Estimate_request::status and ::delete_status are refused with ERP-LEGACY-0403 for every method
- *       and CI3 alias; the other Estimate Request screens remain on Perfex; and
- *       /api/v1/estimate-request-statuses answers 401 without a bearer and 200 or 403 by administrator flag.
  *   29  W2A-05, Currencies (plan 04.1-30): /setup/currencies answers 200 from web signed in and a relative
  *       302 to /login?next=... without a session; every GET and HEAD of Perfex's list (/admin/currencies,
  *       with a trailing slash, /index, /index/, with ?legacy=1: no escape, D-16) redirects to it with a
@@ -1598,94 +1592,6 @@ const main = async () => {
   check(`27g GET /api/v1/payment-modes without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '403 ERP-AUTH-0005 (the target row is not an administrator: the list is administrators only)'}`,
     paymentModesAnon.status === 401 && isProblem(paymentModesAnon, 'ERP-AUTH-0004') && routeOf(paymentModesAnon) === 'api' && paymentModesAuthedOk && routeOf(paymentModesAuthed) === 'api',
     `without: ${problemDetail(paymentModesAnon)} (${routeOf(paymentModesAnon)}); with: ${paymentModesAuthed.status}${paymentModesAuthed.json?.code ? `/${paymentModesAuthed.json.code}` : ''} (${routeOf(paymentModesAuthed)})`)
-
-  // 28. Estimate Request Statuses: route the management screen under Setup; keep the other Estimate
-  //     Request screens on Perfex. The old status and delete_status methods are the only legacy writers.
-  //     The api check reuses the bearer and administrator flag from step 18.
-  const ESTIMATE_REQUEST_STATUSES_LIST = '/setup/estimate_request-statuses'
-
-  const estimateRequestStatusesPage = await http('GET', ESTIMATE_REQUEST_STATUSES_LIST)
-  check('28a GET /setup/estimate_request-statuses signed in -> 200 from web through Nginx',
-    estimateRequestStatusesPage.status === 200 && routeOf(estimateRequestStatusesPage) === 'web',
-    `${estimateRequestStatusesPage.status} route=${routeOf(estimateRequestStatusesPage)}`)
-  const anonEstimateRequestStatuses = await http('GET', ESTIMATE_REQUEST_STATUSES_LIST, { cookies: '' })
-  check('28b GET /setup/estimate_request-statuses with NO session cookie -> 302 to its encoded login next path from proxy.ts',
-    anonEstimateRequestStatuses.status === 302 &&
-      locOf(anonEstimateRequestStatuses) === '/login?next=%2Fsetup%2Festimate_request-statuses' &&
-      routeOf(anonEstimateRequestStatuses) === 'web',
-    `${anonEstimateRequestStatuses.status} location=${locOf(anonEstimateRequestStatuses)} route=${routeOf(anonEstimateRequestStatuses)}`)
-
-  const estimateRequestStatusListForms = [
-    ESTIMATE_REQUEST_STATUSES_LIST,
-    `${ESTIMATE_REQUEST_STATUSES_LIST}/`,
-  ].flatMap((p) => [['GET', p], ['HEAD', p]])
-  const estimateRequestStatusListFailures = await failuresOf(
-    estimateRequestStatusListForms,
-    (r) => r.status === 200 && routeOf(r) === 'web',
-  )
-  check(`28c /setup/estimate_request-statuses and its trailing slash stay on web for GET and HEAD (${estimateRequestStatusListForms.length} requests, signed in)`,
-    estimateRequestStatusListFailures.length === 0,
-    failDetail(estimateRequestStatusListFailures, 'not routed to web'))
-
-  const estimateRequestStatusesLegacyForms = [
-    '/admin/estimate_request/statuses',
-    '/admin/estimate_request/statuses/',
-    '/admin/estimate_request/statuses?legacy=1',
-  ].flatMap((p) => {
-    const target = `/setup/estimate_request-statuses${new URL(p, 'http://localhost').search}`
-    const isRedirect = (r) => r.status === 301 && locOf(r) === target
-    return [['GET', p, isRedirect], ['HEAD', p, isRedirect]]
-  })
-  const estimateRequestStatusesLegacyFailures = await failuresOf(
-    estimateRequestStatusesLegacyForms,
-    () => false,
-  )
-  check(`28d the old /admin/estimate_request/statuses URL and its variants redirect to Setup, preserving the query (${estimateRequestStatusesLegacyForms.length} requests)`,
-    estimateRequestStatusesLegacyFailures.length === 0,
-    failDetail(estimateRequestStatusesLegacyFailures, 'not redirected'))
-
-  const estimateRequestStatusWrites = [
-    '/admin/estimate_request/status',
-    `/admin/estimate_request/delete_status/${NO_ID}`,
-  ]
-  const estimateRequestStatusWriteForms = estimateRequestStatusWrites.flatMap((p) => [
-    p,
-    ...[methodUpper, mixedCase, allUpper, ...ALIAS_FORMS].map((form) => form(p)),
-  ])
-  const estimateRequestStatusWriteRequests = estimateRequestStatusWriteForms.flatMap((p) => [
-    ['GET', p],
-    ['POST', p],
-  ])
-  const estimateRequestStatusWriteFailures = await failuresOf(
-    estimateRequestStatusWriteRequests,
-    (r) => isClosed(r) && r.json?.managedAt === ESTIMATE_REQUEST_STATUSES_LIST,
-  )
-  check(`28e Estimate_request::status and ::delete_status answer 403 ${REFUSAL} with managedAt ${ESTIMATE_REQUEST_STATUSES_LIST} for GET and POST, in 3 letter-case forms and behind every CI3 alias (${estimateRequestStatusWriteRequests.length} requests, no session)`,
-    estimateRequestStatusWriteFailures.length === 0,
-    failDetail(estimateRequestStatusWriteFailures, 'not refused'))
-
-  const estimateRequestReaders = ['/admin/estimate_request', '/admin/estimate_request/forms'].map((p) => ['GET', p])
-  const estimateRequestReaderFailures = await failuresOf(estimateRequestReaders, setupLegacy)
-  check('28f the Estimate Request list and forms still reach Perfex, never refused or redirected',
-    estimateRequestReaderFailures.length === 0,
-    failDetail(estimateRequestReaderFailures, 'moved'))
-
-  const estimateRequestStatusesAnon = await http('GET', '/api/v1/estimate-request-statuses', { cookies: '' })
-  const estimateRequestStatusesAuthed = await http('GET', '/api/v1/estimate-request-statuses', {
-    cookies: '',
-    bearer: exportToken,
-  })
-  const estimateRequestStatusesAuthedOk = isAdminRow
-    ? estimateRequestStatusesAuthed.status === 200
-    : estimateRequestStatusesAuthed.status === 403 &&
-      isProblem(estimateRequestStatusesAuthed, 'ERP-AUTH-0005')
-  check(`28g GET /api/v1/estimate-request-statuses without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '403 ERP-AUTH-0005 (the list is administrators only)'}`,
-    estimateRequestStatusesAnon.status === 401 &&
-      isProblem(estimateRequestStatusesAnon, 'ERP-AUTH-0004') &&
-      routeOf(estimateRequestStatusesAnon) === 'api' &&
-      estimateRequestStatusesAuthedOk &&
-      routeOf(estimateRequestStatusesAuthed) === 'api',
-    `without: ${problemDetail(estimateRequestStatusesAnon)} (${routeOf(estimateRequestStatusesAnon)}); with: ${estimateRequestStatusesAuthed.status}${estimateRequestStatusesAuthed.json?.code ? `/${estimateRequestStatusesAuthed.json.code}` : ''} (${routeOf(estimateRequestStatusesAuthed)})`)
 
   // 29. W2A-05: the Currencies cutover (plan 04.1-30). It runs HERE, after 27 and before 15, for the reason
   //     16 to 27 do (15 locks the account); it renumbers nothing and needs no login of its own: 29a reads the
