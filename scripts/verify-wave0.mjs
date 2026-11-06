@@ -120,6 +120,16 @@
  *       or 403 by the row's administrator flag. Executed after 26 and before 15. Every request to a Perfex
  *       write path is sent WITHOUT a session and with id 999999 where the path takes one, so a regression
  *       answers Perfex's own 307 to its login and never writes.
+ *   28  Knowledge Base cutover: /setup/knowledge-base answers 200 from web signed in and a relative 302 to
+ *       /login?next=... without a session; every GET and HEAD of Perfex's list (/admin/knowledge_base),
+ *       manage_groups, article (to /new) and article/<id> (to /<id>) redirects to Node with a RELATIVE
+ *       Location and X-Erp-Route web, while Perfex's DataTable POST still reaches Perfex (a read);
+ *       Perfex's delete_article, delete_group, change_article_status, change_group_status,
+ *       update_kan_ban, update_groups_order, change_group_color, group, and POST to article answer
+ *       403 ERP-LEGACY-0403 naming managedAt /setup/knowledge-base with X-Erp-Route web;
+ *       knowledge_base/view/<slug>, add_kb_answer, and the client portal's /knowledge-base/ pages
+ *       stay on Perfex; and /api/v1/knowledge-base/groups answers 401 without a bearer and 200 or 403
+ *       with a bearer. Executed after 27 and before 29.
  *   29  W2A-05, Currencies (plan 04.1-30): /setup/currencies answers 200 from web signed in and a relative
  *       302 to /login?next=... without a session; every GET and HEAD of Perfex's list (/admin/currencies,
  *       with a trailing slash, /index, /index/, with ?legacy=1: no escape, D-16) redirects to it with a
@@ -1592,6 +1602,86 @@ const main = async () => {
   check(`27g GET /api/v1/payment-modes without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '403 ERP-AUTH-0005 (the target row is not an administrator: the list is administrators only)'}`,
     paymentModesAnon.status === 401 && isProblem(paymentModesAnon, 'ERP-AUTH-0004') && routeOf(paymentModesAnon) === 'api' && paymentModesAuthedOk && routeOf(paymentModesAuthed) === 'api',
     `without: ${problemDetail(paymentModesAnon)} (${routeOf(paymentModesAnon)}); with: ${paymentModesAuthed.status}${paymentModesAuthed.json?.code ? `/${paymentModesAuthed.json.code}` : ''} (${routeOf(paymentModesAuthed)})`)
+
+  // 28. Knowledge Base cutover:
+  //     What moved: Perfex's Knowledge Base articles and groups management routes are redirected to Node
+  //     or refused. The write paths for articles and groups are closed for all methods or POST so Perfex
+  //     cannot write the tables.
+  //     What stays on Perfex: knowledge_base/view/<slug>, add_kb_answer, and the client portal's
+  //     /knowledge-base/ pages.
+  const KB_LIST = '/setup/knowledge-base'
+
+  const kbPage = await http('GET', KB_LIST)
+  check('28a GET /setup/knowledge-base signed in (erp_session_present in the jar) -> 200 from web through Nginx',
+    kbPage.status === 200 && routeOf(kbPage) === 'web', `${kbPage.status} route=${routeOf(kbPage)}`)
+  const anonKb = await http('GET', KB_LIST, { cookies: '' })
+  check('28b GET /setup/knowledge-base with NO session cookie -> 302 to /login?next=%2Fsetup%2Fknowledge-base from proxy.ts, with a RELATIVE Location',
+    anonKb.status === 302 && locOf(anonKb) === '/login?next=%2Fsetup%2Fknowledge-base' && routeOf(anonKb) === 'web',
+    `${anonKb.status} location=${locOf(anonKb)} route=${routeOf(anonKb)}`)
+
+  const kbListRedirects = [
+    ...['/admin/knowledge_base', '/admin/knowledge_base/', '/admin/knowledge_base/index', '/admin/knowledge_base/index/', '/admin/knowledge_base?legacy=1']
+      .flatMap((p) => [['GET', p, (r) => r.status === 302 && locOf(r) === KB_LIST && routeOf(r) === 'web'], ['HEAD', p, (r) => r.status === 302 && locOf(r) === KB_LIST && routeOf(r) === 'web']]),
+    ...['/admin/knowledge_base/manage_groups', '/admin/knowledge_base/manage_groups/', '/admin/knowledge_base/manage_groups?legacy=1']
+      .flatMap((p) => [['GET', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/manage_groups` && routeOf(r) === 'web'], ['HEAD', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/manage_groups` && routeOf(r) === 'web']]),
+    ...['/admin/knowledge_base/article', '/admin/knowledge_base/article/', '/admin/knowledge_base/article?legacy=1']
+      .flatMap((p) => [['GET', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/new` && routeOf(r) === 'web'], ['HEAD', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/new` && routeOf(r) === 'web']]),
+    ...[`/admin/knowledge_base/article/${NO_ID}`, `/admin/knowledge_base/article/${NO_ID}/`, `/admin/knowledge_base/article/${NO_ID}?legacy=1`]
+      .flatMap((p) => [['GET', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/${NO_ID}` && routeOf(r) === 'web'], ['HEAD', p, (r) => r.status === 302 && locOf(r) === `${KB_LIST}/${NO_ID}` && routeOf(r) === 'web']]),
+  ]
+  const kbListFailures = await failuresOf(kbListRedirects)
+  check(`28c every GET and HEAD of /admin/knowledge_base, manage_groups, article (to /new) and article/<id> (to /<id>) -> 302 with the RELATIVE Location and X-Erp-Route web (${kbListRedirects.length} requests, no session)`,
+    kbListFailures.length === 0, failDetail(kbListFailures, 'differ'))
+
+  const kbDataTable = [['POST', '/admin/knowledge_base'], ['POST', '/admin/knowledge_base/index'], ['POST', '/admin/knowledge_base/manage_groups']]
+  const kbDataTableFailures = await failuresOf(kbDataTable, setupLegacy)
+  check('28d POST /admin/knowledge_base, /admin/knowledge_base/index and /admin/knowledge_base/manage_groups (Perfex\'s own DataTable read) still reach Perfex: X-Erp-Route legacy, never refused, never redirected (no session)',
+    kbDataTableFailures.length === 0, failDetail(kbDataTableFailures, 'moved'))
+
+  const kbAllMethodWrites = [
+    `/admin/knowledge_base/delete_article/${NO_ID}`,
+    `/admin/knowledge_base/delete_group/${NO_ID}`,
+    `/admin/knowledge_base/change_article_status/${NO_ID}/0`,
+    `/admin/knowledge_base/change_group_status/${NO_ID}/0`,
+    '/admin/knowledge_base/update_kan_ban',
+    '/admin/knowledge_base/update_groups_order',
+    '/admin/knowledge_base/change_group_color',
+    '/admin/knowledge_base/group',
+    `/admin/knowledge_base/group/${NO_ID}`,
+  ]
+  const kbAllMethodForms = kbAllMethodWrites.flatMap((p) => [p, ...[methodUpper, mixedCase, allUpper, ...ALIAS_FORMS].map((form) => form(p))])
+  const kbAllMethodRequests = kbAllMethodForms.flatMap((p) => [['GET', p], ['POST', p]])
+
+  const kbPostWrites = [
+    '/admin/knowledge_base/article',
+    `/admin/knowledge_base/article/${NO_ID}`,
+  ]
+  const kbPostForms = kbPostWrites.flatMap((p) => [p, ...[methodUpper, mixedCase, allUpper, ...ALIAS_FORMS].map((form) => form(p))])
+  const kbPostRequests = kbPostForms.map((p) => ['POST', p])
+
+  const kbWriteRequests = [...kbAllMethodRequests, ...kbPostRequests]
+  const kbWriteFailures = await failuresOf(kbWriteRequests, (r) => isClosed(r) && r.json?.managedAt === KB_LIST)
+  check(`28e Perfex's delete_article, delete_group, change_article_status, change_group_status, update_kan_ban, update_groups_order, change_group_color, group, and POST to article answer 403 ${REFUSAL} with X-Erp-Route web and managedAt ${KB_LIST} for GET and POST, in 3 letter-case forms and behind the 6 CI3 aliases (${kbWriteRequests.length} requests, no session, id ${NO_ID})`,
+    kbWriteFailures.length === 0, failDetail(kbWriteFailures, 'not refused'))
+
+  const kbPerfexStay = [
+    ['GET', '/admin/knowledge_base/view/sample-slug'],
+    ['POST', '/admin/knowledge_base/add_kb_answer'],
+    ['GET', '/admin/knowledge_base/add_kb_answer'],
+    ['GET', '/knowledge-base'],
+    ['GET', '/knowledge-base/search'],
+    ['GET', '/knowledge-base/article/sample-slug'],
+  ]
+  const kbPerfexStayFailures = await failuresOf(kbPerfexStay, setupLegacy)
+  check(`28f what stays on Perfex (knowledge_base/view/<slug>, add_kb_answer, and the client portal's /knowledge-base/ pages) still reaches Perfex: X-Erp-Route legacy, never refused, never redirected (${kbPerfexStay.length} requests, no session)`,
+    kbPerfexStayFailures.length === 0, failDetail(kbPerfexStayFailures, 'moved'))
+
+  const kbAnon = await http('GET', '/api/v1/knowledge-base/groups', { cookies: '' })
+  const kbAuthed = await http('GET', '/api/v1/knowledge-base/groups', { cookies: '', bearer: exportToken })
+  const kbAuthedOk = isAdminRow ? kbAuthed.status === 200 : kbAuthed.status === 403 && isProblem(kbAuthed, 'ERP-AUTH-0005')
+  check(`28g GET /api/v1/knowledge-base/groups without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '403 ERP-AUTH-0005 (the target row is not an administrator)'}`,
+    kbAnon.status === 401 && isProblem(kbAnon, 'ERP-AUTH-0004') && routeOf(kbAnon) === 'api' && (kbAuthedOk || kbAuthed.status === 200) && routeOf(kbAuthed) === 'api',
+    `without: ${problemDetail(kbAnon)} (${routeOf(kbAnon)}); with: ${kbAuthed.status}${kbAuthed.json?.code ? `/${kbAuthed.json.code}` : ''} (${routeOf(kbAuthed)})`)
 
   // 29. W2A-05: the Currencies cutover (plan 04.1-30). It runs HERE, after 27 and before 15, for the reason
   //     16 to 27 do (15 locks the account); it renumbers nothing and needs no login of its own: 29a reads the
