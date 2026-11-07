@@ -395,37 +395,50 @@ const rawHttp = (method, path, headers = {}) => new Promise((resolvePromise, rej
  * One request sent from 127.0.0.1 INSIDE the nginx container (quick 261001-m42). The geo block behind
  * /sync_data/* honours X-Forwarded-For only from the loopback (`proxy 127.0.0.1;`), so this is the one
  * client that can present a non-company address to Nginx on a laptop where every host request comes from
- * the Docker gateway, inside the private ranges. The request text travels base64-encoded in an env var,
- * never as a raw CRLF on argv. `holdSeconds` keeps nc's stdin open: busybox nc closes the connection at
- * stdin EOF, which is fine for an answer Nginx gives at once (a `return`), but for a proxied request
- * Nginx then sees the client go away and drops the upstream answer. Returns the shape of rawHttp
+ * the Docker gateway, inside the private ranges. Curl runs inside the nginx container and keeps the
+ * connection open until the upstream response is received. Returns the shape of rawHttp
  * (`headers.get` lower-cased, null when absent), so routeOf, isClosed and probeLine work on it; an empty
  * answer is status 0. Synchronous: failuresOf awaits whatever `send` returns.
  */
-const fromNginx = (method, path, xff, holdSeconds = 0) => {
-  const lines = [`${method} ${path} HTTP/1.0`, 'Host: localhost:8088', `X-Forwarded-For: ${xff}`]
-  if (method === 'POST') lines.push('Content-Length: 0')
-  const b64 = Buffer.from(`${lines.join('\r\n')}\r\n\r\n`, 'utf8').toString('base64')
-  const res = compose(['exec', '-T', '-e', `REQ=${b64}`, 'nginx', 'sh', '-c', holdSeconds
-    ? `{ printf "%s" "$REQ" | base64 -d; sleep ${holdSeconds}; } | nc -w 5 127.0.0.1 80`
-    : 'printf "%s" "$REQ" | base64 -d | nc -w 5 127.0.0.1 80'])
+const fromNginx = (method, path, xff) => {
+  const url = `http://127.0.0.1${path}`
+  const bodyHeader = method === 'POST' ? ' -H "Content-Length: 0"' : ''
+  const command = `curl -sS -i --max-time 20 -X ${method}${bodyHeader} -H "Host: localhost:8088" -H "X-Forwarded-For: $XFF" -H "Connection: close" "${url}"`
+
+  const res = compose([
+    'exec', '-T', '-e', `XFF=${xff}`,
+    'nginx', 'sh', '-c', command,
+  ])
+
   const raw = res.stdout || ''
   const split = raw.indexOf('\r\n\r\n')
   const head = split < 0 ? raw : raw.slice(0, split)
   const text = split < 0 ? '' : raw.slice(split + 4)
-  const [statusLine = '', ...headerLines] = head.split('\r\n')
+  const [statusLine = '', ...headerLines] = head.split(/\r?\n/)
   const status = parseInt(statusLine.split(' ')[1], 10) || 0
   const headerMap = new Map()
+
   for (const line of headerLines) {
     const i = line.indexOf(':')
     if (i < 0) continue
     const name = line.slice(0, i).trim().toLowerCase()
     const value = line.slice(i + 1).trim()
-    headerMap.set(name, headerMap.has(name) ? `${headerMap.get(name)}, ${value}` : value)
+    headerMap.set(name, headerMap.has(name)
+      ? `${headerMap.get(name)}, ${value}`
+      : value)
   }
+
   let json = null
   try { json = JSON.parse(text) } catch { /* not JSON */ }
-  return { status, headers: { get: (name) => headerMap.get(String(name).toLowerCase()) ?? null }, text, json }
+
+  return {
+    status,
+    headers: {
+      get: (name) => headerMap.get(String(name).toLowerCase()) ?? null,
+    },
+    text,
+    json,
+  }
 }
 
 const waitFor = async (url, status, timeoutMs, everyMs = 1000) => {
@@ -1313,7 +1326,7 @@ const main = async () => {
     syncForms.push([path, await http('GET', path, { cookies: '' })])
   }
   syncForms.push(['/sync_data/status with x-forwarded-for 203.0.113.7 from the host', await http('GET', '/sync_data/status', { cookies: '', headers: { 'x-forwarded-for': '203.0.113.7' } })])
-  syncForms.push(['/sync_data/status from 127.0.0.1 in nginx with x-forwarded-for 10.20.30.40', fromNginx('GET', '/sync_data/status', '10.20.30.40', 2)])
+  syncForms.push(['/sync_data/status from 127.0.0.1 in nginx with x-forwarded-for 10.20.30.40', fromNginx('GET', '/sync_data/status', '10.20.30.40')])
   const syncDiffers = syncForms.filter(([, r]) => !(r.status === syncCanonical.status && routeOf(r) === 'legacy' && !r.text.includes(REFUSAL)))
     .map(([path, r]) => probeLine('GET', path, r))
   check(`21e /sync_data/status from an allowed source is Perfex's answer: from the host (the Docker gateway, inside the company network) as written, in two letter-case forms and behind the CI3 aliases, with a forged X-Forwarded-For that Nginx ignores from the host, and from inside the container with a company address (${syncForms.length + 1} requests, no session; D-52)`,
@@ -1868,6 +1881,43 @@ const main = async () => {
   check(`33b the neighbours still reach Perfex: adjustment_fill_multiple_serial_number_modal (the serial modal), two longer names (adjustx, adjust_x) and accounting's own adjustment route (${adjustClosureNeighbours.length} requests, GET, no session; D-19)`,
     adjustClosureNeighbourFailures.length === 0, failDetail(adjustClosureNeighbourFailures, 'moved'))
 
+  // 34. Todo: only the list screen moves; dashboard actions remain on Perfex.
+  const TODO_LIST = '/setup/todo'
+
+  const todoPage = await http('GET', TODO_LIST)
+  check('34a signed-in Todo setup page reaches web (200)',
+    todoPage.status === 200 && routeOf(todoPage) === 'web',
+    probeLine('GET', TODO_LIST, todoPage))
+
+  const anonTodoPage = await http('GET', TODO_LIST, { cookies: '' })
+  check('34b signed-out Todo setup page redirects to login',
+    anonTodoPage.status === 302 &&
+      locOf(anonTodoPage) === '/login?next=%2Fsetup%2Ftodo' &&
+      routeOf(anonTodoPage) === 'web',
+    probeLine('GET', TODO_LIST, anonTodoPage))
+
+  const todoListRequests = ['/admin/todo', '/admin/todo/']
+    .flatMap((p) => [['GET', p], ['HEAD', p]])
+  const todoListFailures = await failuresOf(
+    todoListRequests,
+    (r) => r.status === 302 && locOf(r) === TODO_LIST && routeOf(r) === 'web',
+    sessionless,
+  )
+  check(`34c GET/HEAD old Todo list URLs redirect to ${TODO_LIST} (${todoListRequests.length} requests, no session)`,
+    todoListFailures.length === 0,
+    failDetail(todoListFailures, 'differ'))
+
+  const todoPerfexActions = [
+    ['POST', '/admin/todo'],
+    ['GET', `/admin/todo/get_by_id/${NO_ID}`],
+    ['GET', `/admin/todo/change_todo_status/${NO_ID}/0`],
+    ['POST', '/admin/todo/update_todo_items_order'],
+    ['GET', `/admin/todo/delete_todo_item/${NO_ID}`],
+  ]
+  const todoActionFailures = await failuresOf(todoPerfexActions, setupLegacy, sessionless)
+  check(`34d the five Todo create and dashboard actions remain on Perfex (${todoPerfexActions.length} requests, no session; dummy id ${NO_ID})`,
+    todoActionFailures.length === 0,
+    failDetail(todoActionFailures, 'did not reach Perfex'))
   // 15. lockout (last: it locks the target account until the restore clears the key) ------------------
   const responses = []
   for (let i = 0; i < LOCKOUT_THRESHOLD; i += 1) responses.push(await login(`wrong-${pw}-${i}`))

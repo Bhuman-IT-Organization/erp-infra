@@ -175,7 +175,7 @@ console.log(`
     http://localhost:8088/api/v1/health         erp-api
     http://localhost:8080                       legacy directly
     127.0.0.1:33061                             MySQL
-    127.0.0.1:63791                             Redis
+    127.0.0.1:16379                             Redis
 
   Stop with: node scripts/local-down.mjs
 `)
