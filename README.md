@@ -23,7 +23,7 @@ A second run is a no-op unless a source file changed. Two things make that true,
 | <http://localhost:8088/api/v1/health> | erp-api, through Nginx |
 | <http://localhost:8080> | legacy directly (its own Apache, bypassing Nginx) |
 | `127.0.0.1:33061` | MySQL (`legacy-db`), for host-side tooling |
-| `127.0.0.1:63791` | Redis, for host-side tooling |
+| `127.0.0.1:16379` | Redis, for host-side tooling |
 | <http://127.0.0.1:18025> | Mailpit web UI and REST API (local mail catcher) |
 | `127.0.0.1:11025` | Mailpit SMTP, for host runs |
 
@@ -40,7 +40,7 @@ Then open <http://localhost:8088> as usual. A saved change in erp-web shows in t
 
 How it works: `compose/local.web-dev.yml` leaves `web` out of `up`, drops it from nginx's `depends_on`, and gives nginx `extra_hosts: web:host-gateway`, so `upstream node_web { server web:3000; }` reaches the laptop's port 3000 without changing `default.conf` (nginx reads `/etc/hosts` before Docker's DNS). `--web-dev` also stops and removes a `web` container left from a normal run. Hot reload uses a websocket on `/_next/hmr`, which has its own location in `default.conf` (the shared `proxy-common.conf` clears `Connection`, which would drop the upgrade); outside dev mode that path answers 404. `scripts/web-dev.mjs` refuses to start while the `web` container still runs or when nothing answers on 8088. Verified 2026-10-19 with Next 16.3: pages, assets and the `/_next/hmr` websocket (101) through Nginx, and a saved message-file change visible on the next request with no rebuild.
 
-Published ports: 8088 nginx, 8080 legacy direct, 33061 MySQL, 63791 Redis, 11025 and 18025 Mailpit, all bound to `127.0.0.1` only. `api` and `web` publish nothing; reach them through Nginx. Redis runs with AOF on (`--appendonly yes --appendfsync everysec`, named volume `redisdata`) because DB 1 holds auth sessions (ADR-0005: a cache flush must never log anyone out); DB 0 is cache; it is loopback-only and has no password; `requirepass` and a separate auth instance are Phase 5. The local MySQL runs with an explicit `--max-connections=60` (set in `workspace/legacy-local/docker-compose.yml`, where the service is defined) so the pool arithmetic below is tested against a known number, not MySQL 8's default 151.
+Published ports: 8088 nginx, 8080 legacy direct, 33061 MySQL, 16379 Redis, 11025 and 18025 Mailpit, all bound to `127.0.0.1` only. `api` and `web` publish nothing; reach them through Nginx. Redis runs with AOF on (`--appendonly yes --appendfsync everysec`, named volume `redisdata`) because DB 1 holds auth sessions (ADR-0005: a cache flush must never log anyone out); DB 0 is cache; it is loopback-only and has no password; `requirepass` and a separate auth instance are Phase 5. The local MySQL runs with an explicit `--max-connections=60` (set in `workspace/legacy-local/docker-compose.yml`, where the service is defined) so the pool arithmetic below is tested against a known number, not MySQL 8's default 151.
 
 ## Pool budget
 
@@ -191,7 +191,7 @@ A second source is computed by the renderer itself: on first run it generates an
 | Rendered file | Used by |
 |---|---|
 | `env/local/api.env` | the `api` container (`DATABASE_URL` → `legacy-db:3306?connection_limit=10`, `REDIS_URL` → `redis:6379`, `LEGACY_BASE_URL=http://legacy:80`) |
-| `env/local/api.host.env` | host-side tooling: `prisma db pull`, integration tests, `yarn start:local` (`127.0.0.1:33061?connection_limit=5`, `127.0.0.1:63791`, `LEGACY_BASE_URL=http://127.0.0.1:8080`) |
+| `env/local/api.host.env` | host-side tooling: `prisma db pull`, integration tests, `yarn start:local` (`127.0.0.1:33061?connection_limit=5`, `127.0.0.1:16379`, `LEGACY_BASE_URL=http://127.0.0.1:8080`) |
 | `env/local/web.env` | the `web` container (`API_BASE_URL=http://nginx`, so SSR fetches go through the same strangler routing as the browser) |
 | `nginx/local/snippets/company-network.conf` | the `nginx` container: the `geo $erp_company_network` allow-list for `/sync_data/*` (one `<range> 1;` line per entry of `ERP_COMPANY_NETWORKS`) |
 
