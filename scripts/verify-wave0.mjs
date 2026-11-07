@@ -1918,6 +1918,57 @@ const main = async () => {
   check(`34d the five Todo create and dashboard actions remain on Perfex (${todoPerfexActions.length} requests, no session; dummy id ${NO_ID})`,
     todoActionFailures.length === 0,
     failDetail(todoActionFailures, 'did not reach Perfex'))
+  // 34. Fixed Equipment Depreciations: the Settings > Depreciations tab cutover. It runs HERE, after 33
+  //     and before 15, for the reason 16 to 33 do (15 locks the account); it renumbers nothing and needs
+  //     no login of its own: 34a reads the page with the jar step 18's login filled, and 34f reuses step
+  //     18's token and the administrator flag it read. Every request to a Perfex write path is sent
+  //     WITHOUT a session and with id 999999 where the path takes one (NO_ID), so a regression answers
+  //     Perfex's own 307 to its login and can never write. Perfex's writers (add_depreciations, which
+  //     adds and edits, and delete_depreciations) are refused in 34e; the settings page serves every
+  //     tab, so only ?tab=depreciations moves (34c), and the other tabs and Perfex's own DataTable read
+  //     stay on Perfex (34d).
+  const DEPRECIATIONS_LIST = '/setup/fixed-equipment-depreciations'
+
+  const depreciationsPage = await http('GET', DEPRECIATIONS_LIST)
+  check('34a GET /setup/fixed-equipment-depreciations signed in (erp_session_present in the jar) -> 200 from web through Nginx',
+    depreciationsPage.status === 200 && routeOf(depreciationsPage) === 'web', `${depreciationsPage.status} route=${routeOf(depreciationsPage)}`)
+  const anonDepreciations = await http('GET', DEPRECIATIONS_LIST, { cookies: '' })
+  check('34b GET /setup/fixed-equipment-depreciations with NO session cookie -> 302 to /login?next=%2Fsetup%2Ffixed-equipment-depreciations from proxy.ts, with a RELATIVE Location',
+    anonDepreciations.status === 302 && locOf(anonDepreciations) === '/login?next=%2Fsetup%2Ffixed-equipment-depreciations' && routeOf(anonDepreciations) === 'web',
+    `${anonDepreciations.status} location=${locOf(anonDepreciations)} route=${routeOf(anonDepreciations)}`)
+
+  const depreciationsTabForms = ['/admin/fixed_equipment/settings?tab=depreciations', '/admin/fixed_equipment/settings/?tab=depreciations']
+  const depreciationsTabRedirects = depreciationsTabForms.flatMap((p) => [['GET', p], ['HEAD', p]])
+  const depreciationsTabFailures = await failuresOf(depreciationsTabRedirects, (r) => r.status === 302 && locOf(r) === DEPRECIATIONS_LIST && routeOf(r) === 'web')
+  check(`34c every GET and HEAD of Perfex's settings?tab=depreciations, with and without a trailing slash, -> 302 with the RELATIVE Location ${DEPRECIATIONS_LIST} and X-Erp-Route web (${depreciationsTabRedirects.length} requests, no session)`,
+    depreciationsTabFailures.length === 0, failDetail(depreciationsTabFailures, 'differ'))
+
+  const depreciationsStayOnPerfex = [
+    ['GET', '/admin/fixed_equipment/settings?tab=models'],
+    ['GET', '/admin/fixed_equipment/settings?tab=suppliers'],
+    ['POST', '/admin/fixed_equipment/settings?tab=depreciations'],
+    ['POST', '/admin/fixed_equipment/depreciations_table'],
+  ]
+  const depreciationsStayFailures = await failuresOf(depreciationsStayOnPerfex, setupLegacy)
+  check(`34d the other settings tabs (?tab=models, ?tab=suppliers), a POST to the settings page and POST depreciations_table (Perfex's own DataTable read) still reach Perfex: X-Erp-Route legacy, never refused, never redirected (${depreciationsStayOnPerfex.length} requests, no session: Perfex's own answer is the proof it arrived)`,
+    depreciationsStayFailures.length === 0, failDetail(depreciationsStayFailures, 'moved'))
+
+  const depreciationsWrites = ['/admin/fixed_equipment/add_depreciations', `/admin/fixed_equipment/delete_depreciations/${NO_ID}`]
+  const depreciationsWriteForms = depreciationsWrites.flatMap((p) => [p, ...[methodUpper, mixedCase, allUpper, ...ALIAS_FORMS].map((form) => form(p))])
+  const depreciationsWriteRequests = depreciationsWriteForms.flatMap((p) => [['GET', p], ['POST', p]])
+  const depreciationsWriteFailures = await failuresOf(depreciationsWriteRequests, (r) => isClosed(r) && r.json?.managedAt === DEPRECIATIONS_LIST)
+  check(`34e Perfex's add_depreciations (add and edit) and delete_depreciations answer 403 ${REFUSAL} with X-Erp-Route web and managedAt ${DEPRECIATIONS_LIST} for GET and POST, as written, in 3 letter-case forms and behind the 6 CI3 aliases, /index.php/ included (${depreciationsWriteRequests.length} requests, no session, id ${NO_ID})`,
+    depreciationsWriteFailures.length === 0, failDetail(depreciationsWriteFailures, 'not refused'))
+
+  const depreciationsAnon = await http('GET', '/api/v1/fixed-equipment-depreciations', { cookies: '' })
+  const depreciationsAuthed = await http('GET', '/api/v1/fixed-equipment-depreciations', { cookies: '', bearer: exportToken })
+  const depreciationsAuthedOk = isAdminRow
+    ? depreciationsAuthed.status === 200
+    : depreciationsAuthed.status === 200 || (depreciationsAuthed.status === 403 && isProblem(depreciationsAuthed, 'ERP-AUTH-0005'))
+  check(`34f GET /api/v1/fixed-equipment-depreciations without a bearer -> 401 ERP-AUTH-0004 from api; with the run's bearer -> ${isAdminRow ? '200 (the target row is an administrator)' : '200 or 403 ERP-AUTH-0005 (the target row is not an administrator: it depends on its view codes in the tab\'s five groups)'}`,
+    depreciationsAnon.status === 401 && isProblem(depreciationsAnon, 'ERP-AUTH-0004') && routeOf(depreciationsAnon) === 'api' && depreciationsAuthedOk && routeOf(depreciationsAuthed) === 'api',
+    `without: ${problemDetail(depreciationsAnon)} (${routeOf(depreciationsAnon)}); with: ${depreciationsAuthed.status}${depreciationsAuthed.json?.code ? `/${depreciationsAuthed.json.code}` : ''} (${routeOf(depreciationsAuthed)})`)
+
   // 15. lockout (last: it locks the target account until the restore clears the key) ------------------
   const responses = []
   for (let i = 0; i < LOCKOUT_THRESHOLD; i += 1) responses.push(await login(`wrong-${pw}-${i}`))
